@@ -484,6 +484,12 @@ func ParseModel(config technologyMapConfigReader, modelInput *input.Model, built
 	if err != nil {
 		return nil, err
 	}
+	// build and validate the trust-boundary containment topology (parent chain, complete
+	// ancestor chains, and nearest network domain) shared by all network-related rules
+	err = parsedModel.BuildTrustBoundaryTopology()
+	if err != nil {
+		return nil, err
+	}
 
 	// Shared Runtime ===============================================================================
 	parsedModel.SharedRuntimes = make(map[string]*types.SharedRuntime)

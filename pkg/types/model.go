@@ -54,6 +54,13 @@ type Model struct {
 	DirectContainingTrustBoundaryMappedByTechnicalAssetId map[string]*TrustBoundary       `json:"direct_containing_trust_boundary_mapped_by_technical_asset_id,omitempty" yaml:"direct_containing_trust_boundary_mapped_by_technical_asset_id,omitempty"`
 	GeneratedRisksByCategory                              map[string][]*Risk              `json:"generated_risks_by_category,omitempty" yaml:"generated_risks_by_category,omitempty"`
 	GeneratedRisksBySyntheticId                           map[string]*Risk                `json:"generated_risks_by_synthetic_id,omitempty" yaml:"generated_risks_by_synthetic_id,omitempty"`
+
+	// validated trust-boundary containment topology (generated during model parsing):
+	// each trust boundary has at most one parent, cycles are rejected, and assets without any
+	// surrounding trust boundary simply have no entries here
+	ParentTrustBoundaryMappedByTrustBoundaryId          map[string]*TrustBoundary   `json:"parent_trust_boundary_mapped_by_trust_boundary_id,omitempty" yaml:"parent_trust_boundary_mapped_by_trust_boundary_id,omitempty"`
+	TrustBoundaryAncestorsMappedByTrustBoundaryId       map[string][]*TrustBoundary `json:"trust_boundary_ancestors_mapped_by_trust_boundary_id,omitempty" yaml:"trust_boundary_ancestors_mapped_by_trust_boundary_id,omitempty"`
+	NearestNetworkTrustBoundaryMappedByTechnicalAssetId map[string]*TrustBoundary   `json:"nearest_network_trust_boundary_mapped_by_technical_asset_id,omitempty" yaml:"nearest_network_trust_boundary_mapped_by_technical_asset_id,omitempty"`
 }
 
 type ProgressReporter interface {
@@ -409,34 +416,44 @@ func (model *Model) FindTrustBoundaryHighestAvailability(tb *TrustBoundary) Crit
 
 func (model *Model) RecursivelyAllTechnicalAssetIDsInside(tb *TrustBoundary) []string {
 	result := make([]string, 0)
-	model.addAssetIDsRecursively(tb, &result)
+	model.addAssetIDsRecursively(tb, &result, make(map[string]bool))
 	return result
 }
 
-func (model *Model) addAssetIDsRecursively(tb *TrustBoundary, result *[]string) {
+func (model *Model) addAssetIDsRecursively(tb *TrustBoundary, result *[]string, visited map[string]bool) {
+	if tb == nil || visited[tb.Id] { // cycle-safe (cycles are additionally rejected while parsing)
+		return
+	}
+	visited[tb.Id] = true
 	*result = append(*result, tb.TechnicalAssetsInside...)
 	for _, nestedBoundaryID := range tb.TrustBoundariesNested {
-		model.addAssetIDsRecursively(model.TrustBoundaries[nestedBoundaryID], result)
+		model.addAssetIDsRecursively(model.TrustBoundaries[nestedBoundaryID], result, visited)
 	}
 }
 
+// AllParentTrustBoundaryIDs returns the id of the given boundary itself followed by the
+// ids of all containing boundaries outwards (i.e. direct parent first, outermost last).
 func (model *Model) AllParentTrustBoundaryIDs(what *TrustBoundary) []string {
 	result := make([]string, 0)
-	model.addTrustBoundaryIDsRecursively(what, &result)
+	if what == nil {
+		return result
+	}
+	result = append(result, what.Id)
+	for _, ancestor := range model.TrustBoundaryAncestors(what) {
+		result = append(result, ancestor.Id)
+	}
 	return result
 }
 
-func (model *Model) addTrustBoundaryIDsRecursively(what *TrustBoundary, result *[]string) {
-	*result = append(*result, what.Id)
-	parent := model.FindParentTrustBoundary(what)
-	if parent != nil {
-		model.addTrustBoundaryIDsRecursively(parent, result)
-	}
-}
-
+// FindParentTrustBoundary returns the single parent trust boundary directly nesting the given
+// one, or nil when it is a root. It uses the validated topology built during model parsing and
+// falls back to scanning the nesting declarations for models constructed directly in code.
 func (model *Model) FindParentTrustBoundary(tb *TrustBoundary) *TrustBoundary {
 	if tb == nil {
 		return nil
+	}
+	if model.ParentTrustBoundaryMappedByTrustBoundaryId != nil {
+		return model.ParentTrustBoundaryMappedByTrustBoundaryId[tb.Id]
 	}
 	for _, candidate := range model.TrustBoundaries {
 		if contains(candidate.TrustBoundariesNested, tb.Id) {

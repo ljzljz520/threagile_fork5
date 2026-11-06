@@ -6,39 +6,17 @@ import (
 	"github.com/threagile/threagile/pkg/types"
 )
 
+// isAcrossTrustBoundaryNetworkOnly reports whether the communication link leaves the network
+// domain of its source asset and enters a different one. The nearest network trust boundary is
+// resolved from the validated trust-boundary topology, transparently walking through nested
+// execution environments and other logical (non-network) boundaries on either side.
 func isAcrossTrustBoundaryNetworkOnly(parsedModel *types.Model, communicationLink *types.CommunicationLink) bool {
-
-	isAcrossNetworkTrustBoundary := func(
-		trustBoundaryOfSourceAsset *types.TrustBoundary, trustBoundaryOfTargetAsset *types.TrustBoundary) bool {
-		return trustBoundaryOfSourceAsset.Id != trustBoundaryOfTargetAsset.Id && trustBoundaryOfTargetAsset.Type.IsNetworkBoundary()
-	}
-
-	trustBoundaryOfSourceAsset, trustBoundaryOfSourceAssetOk :=
-		parsedModel.DirectContainingTrustBoundaryMappedByTechnicalAssetId[communicationLink.SourceId]
-	if !isNetworkOnly(parsedModel, trustBoundaryOfSourceAssetOk, trustBoundaryOfSourceAsset) {
+	trustBoundaryOfSourceAsset := parsedModel.NearestNetworkTrustBoundary(communicationLink.SourceId)
+	trustBoundaryOfTargetAsset := parsedModel.NearestNetworkTrustBoundary(communicationLink.TargetId)
+	if trustBoundaryOfSourceAsset == nil || trustBoundaryOfTargetAsset == nil {
 		return false
 	}
-
-	trustBoundaryOfTargetAsset, trustBoundaryOfTargetAssetOk :=
-		parsedModel.DirectContainingTrustBoundaryMappedByTechnicalAssetId[communicationLink.TargetId]
-	if !isNetworkOnly(parsedModel, trustBoundaryOfTargetAssetOk, trustBoundaryOfTargetAsset) {
-		return false
-	}
-
-	return isAcrossNetworkTrustBoundary(trustBoundaryOfSourceAsset, trustBoundaryOfTargetAsset)
-}
-
-func isNetworkOnly(parsedModel *types.Model, trustBoundaryOk bool, trustBoundary *types.TrustBoundary) bool {
-	if !trustBoundaryOk {
-		return false
-	}
-	if !trustBoundary.Type.IsNetworkBoundary() { // find and use the parent boundary then
-		parentTrustBoundary := parsedModel.FindParentTrustBoundary(trustBoundary)
-		if parentTrustBoundary != nil {
-			return false
-		}
-	}
-	return true
+	return trustBoundaryOfSourceAsset.Id != trustBoundaryOfTargetAsset.Id
 }
 
 func contains(as []string, b string) bool {
@@ -76,29 +54,19 @@ func isSameExecutionEnvironment(parsedModel *types.Model, ta *types.TechnicalAss
 	return false
 }
 
+// isSameTrustBoundaryNetworkOnly reports whether both assets reside within the same network
+// domain, using the nearest network trust boundary from the validated trust-boundary topology
+// (nested execution environments and other logical boundaries are walked through). When neither
+// asset resolves to any network boundary they are considered within the same domain, while a
+// single-sided resolution counts as separated. This network-domain strategy intentionally
+// differs from isSameExecutionEnvironment's exact execution-environment match.
 func isSameTrustBoundaryNetworkOnly(parsedModel *types.Model, ta *types.TechnicalAsset, otherAssetId string) bool {
-
-	useParentBoundary := func(trustBoundaryOfAsset **types.TrustBoundary, parsedModel *types.Model, trustBoundaryOfAssetOk *bool) {
-		if trustBoundaryOfAsset == nil {
-			return
-		}
-		tb := *trustBoundaryOfAsset
-		if tb != nil && !tb.Type.IsNetworkBoundary() {
-			*trustBoundaryOfAsset = parsedModel.FindParentTrustBoundary(tb)
-			*trustBoundaryOfAssetOk = *trustBoundaryOfAsset != nil
-		}
-	}
-
-	trustBoundaryOfMyAsset, trustBoundaryOfMyAssetOk := parsedModel.DirectContainingTrustBoundaryMappedByTechnicalAssetId[ta.Id]
-	useParentBoundary(&trustBoundaryOfMyAsset, parsedModel, &trustBoundaryOfMyAssetOk)
-
-	trustBoundaryOfOtherAsset, trustBoundaryOfOtherAssetOk := parsedModel.DirectContainingTrustBoundaryMappedByTechnicalAssetId[otherAssetId]
-	useParentBoundary(&trustBoundaryOfOtherAsset, parsedModel, &trustBoundaryOfOtherAssetOk)
-
-	if trustBoundaryOfMyAssetOk != trustBoundaryOfOtherAssetOk {
+	trustBoundaryOfMyAsset := parsedModel.NearestNetworkTrustBoundary(ta.Id)
+	trustBoundaryOfOtherAsset := parsedModel.NearestNetworkTrustBoundary(otherAssetId)
+	if (trustBoundaryOfMyAsset == nil) != (trustBoundaryOfOtherAsset == nil) {
 		return false
 	}
-	if !trustBoundaryOfMyAssetOk {
+	if trustBoundaryOfMyAsset == nil {
 		return true
 	}
 	return trustBoundaryOfMyAsset.Id == trustBoundaryOfOtherAsset.Id

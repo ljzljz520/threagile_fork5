@@ -462,6 +462,89 @@ func Test_isSameTrustBoundaryNetworkOnly_DifferentNotNetworkBoundaryReturnFalse(
 	assert.False(t, result)
 }
 
+// deeplyNestedTrustBoundaries builds a topology with execution environments nested over
+// multiple levels (fallback path: no precomputed topology maps, only declared nesting):
+// net-a -> exec-a-outer -> exec-a-inner (asset-a); asset-a-direct directly in net-a
+// net-b (asset-b); net-c -> exec-c (asset-c); bare exec-d (asset-d, no network ancestor)
+func deeplyNestedTrustBoundaries() *types.Model {
+	netA := &types.TrustBoundary{Id: "net-a", Type: types.NetworkOnPrem, TrustBoundariesNested: []string{"exec-a-outer"}}
+	execAOuter := &types.TrustBoundary{Id: "exec-a-outer", Type: types.ExecutionEnvironment, TrustBoundariesNested: []string{"exec-a-inner"}}
+	execAInner := &types.TrustBoundary{Id: "exec-a-inner", Type: types.ExecutionEnvironment}
+	netB := &types.TrustBoundary{Id: "net-b", Type: types.NetworkOnPrem}
+	netC := &types.TrustBoundary{Id: "net-c", Type: types.NetworkCloudProvider, TrustBoundariesNested: []string{"exec-c"}}
+	execC := &types.TrustBoundary{Id: "exec-c", Type: types.ExecutionEnvironment}
+	execD := &types.TrustBoundary{Id: "exec-d", Type: types.ExecutionEnvironment}
+	parsedModel := &types.Model{
+		TrustBoundaries: map[string]*types.TrustBoundary{
+			"net-a": netA, "exec-a-outer": execAOuter, "exec-a-inner": execAInner,
+			"net-b": netB, "net-c": netC, "exec-c": execC, "exec-d": execD,
+		},
+		DirectContainingTrustBoundaryMappedByTechnicalAssetId: map[string]*types.TrustBoundary{
+			"asset-a":        execAInner,
+			"asset-a-direct": netA,
+			"asset-b":        netB,
+			"asset-c":        execC,
+			"asset-d":        execD,
+		},
+	}
+	return parsedModel
+}
+
+func Test_IsAcrossTrustBoundaryNetworkOnly_DeeplyNestedExecutionEnvironments(t *testing.T) {
+	tests := []struct {
+		name     string
+		sourceId string
+		targetId string
+		expected bool
+	}{
+		{"nested exec to different network", "asset-a", "asset-b", true},
+		{"nested exec deep under net-a to direct asset in net-a", "asset-a", "asset-a-direct", false},
+		{"different networks both behind exec", "asset-a", "asset-c", true},
+		{"network domain vs bare exec without network", "asset-a", "asset-d", false},
+		{"bare exec without network vs network domain", "asset-d", "asset-b", false},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			parsedModel := deeplyNestedTrustBoundaries()
+			link := &types.CommunicationLink{SourceId: testCase.sourceId, TargetId: testCase.targetId}
+			assert.Equal(t, testCase.expected, isAcrossTrustBoundaryNetworkOnly(parsedModel, link))
+		})
+	}
+}
+
+func Test_isSameTrustBoundaryNetworkOnly_DeeplyNestedExecutionEnvironments(t *testing.T) {
+	tests := []struct {
+		name     string
+		assetId  string
+		otherId  string
+		expected bool
+	}{
+		{"deep nesting resolves to same network", "asset-a", "asset-a-direct", true},
+		{"different networks through exec", "asset-a", "asset-b", false},
+		{"single nesting resolves to network", "asset-c", "asset-b", false},
+		{"network domain vs bare exec separated", "asset-a", "asset-d", false},
+		{"two bare execs without network count as same", "asset-d", "asset-d", true},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			parsedModel := deeplyNestedTrustBoundaries()
+			ta := &types.TechnicalAsset{Id: testCase.assetId}
+			assert.Equal(t, testCase.expected, isSameTrustBoundaryNetworkOnly(parsedModel, ta, testCase.otherId))
+		})
+	}
+}
+
+func Test_isSameExecutionEnvironment_StaysStrictUnderNesting(t *testing.T) {
+	parsedModel := deeplyNestedTrustBoundaries()
+
+	// assets in the same direct execution environment match ...
+	assert.True(t, isSameExecutionEnvironment(parsedModel, &types.TechnicalAsset{Id: "asset-a"}, "asset-a"))
+	// ... but an execution environment nested within another one is a different environment
+	assert.False(t, isSameExecutionEnvironment(parsedModel, &types.TechnicalAsset{Id: "asset-a"}, "asset-c"))
+	// and a nested execution environment is not treated as the enclosing network's environment
+	assert.False(t, isSameExecutionEnvironment(parsedModel, &types.TechnicalAsset{Id: "asset-a"}, "asset-a-direct"))
+}
+
 func Test_contains(t *testing.T) {
 	tests := []struct {
 		name     string
